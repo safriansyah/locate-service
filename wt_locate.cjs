@@ -83,26 +83,46 @@ async function run() {
 
     const page = await browser.newPage();
     await page.setUserAgent(
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36'
     );
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7' });
 
-    // Spoof WebGL renderer agar CF Turnstile tidak deteksi SwiftShader (software renderer = bot signal)
+    // Spoof fingerprint agar CF Turnstile tidak deteksi headless/SwiftShader
     await page.evaluateOnNewDocument(() => {
-        const spoof = (ctx) => {
+        // WebGL: sembunyikan SwiftShader, pura-pura Intel GPU
+        const spoofGL = (ctx) => {
             const orig = ctx.prototype.getParameter;
             ctx.prototype.getParameter = function(p) {
-                if (p === 37445) return 'Intel Inc.'; // UNMASKED_VENDOR_WEBGL
-                if (p === 37446) return 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)'; // UNMASKED_RENDERER_WEBGL
+                if (p === 37445) return 'Intel Inc.';
+                if (p === 37446) return 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)';
                 return orig.call(this, p);
             };
         };
-        try { spoof(WebGLRenderingContext); } catch (_) {}
-        try { spoof(WebGL2RenderingContext); } catch (_) {}
+        try { spoofGL(WebGLRenderingContext); } catch (_) {}
+        try { spoofGL(WebGL2RenderingContext); } catch (_) {}
+
+        // Platform consistency: UA bilang Windows, platform harus Win32
+        try {
+            Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+        } catch (_) {}
+
+        // Sembunyikan headless: pastikan window.chrome ada
+        if (!window.chrome) {
+            window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {} };
+        }
     });
 
     let trackResponse = null;
+    let trackRequestSnip = '';
     const jsErrors = [];
+    page.on('request', req => {
+        const url = req.url();
+        if (url.includes('/api/track') && !url.includes('balance') && !url.includes('count')) {
+            const post = req.postData() || '';
+            // ambil 200 char pertama body request untuk diagnosis
+            trackRequestSnip = post.substring(0, 200);
+        }
+    });
     page.on('response', async resp => {
         const url = resp.url();
         if (url.includes('/api/track') && !url.includes('balance') && !url.includes('count')) {
@@ -241,10 +261,10 @@ async function run() {
     if (trackResponse.status !== 200) {
         let errBody = {};
         try { errBody = JSON.parse(trackResponse.body); } catch (_) {}
+        const hasTurnstile = trackRequestSnip.includes('turnstile') || trackRequestSnip.includes('cf-') || trackRequestSnip.length > 50;
         return {
             success: false,
-            error: errBody.error || errBody.message || `HTTP ${trackResponse.status}`,
-            http_status: trackResponse.status,
+            error: `[${trackResponse.status}] ${errBody.error || errBody.message || 'HTTP error'} | req:"${trackRequestSnip.substring(0,120)}" | hasTurnstile:${hasTurnstile}`,
         };
     }
 
