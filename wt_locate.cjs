@@ -1,35 +1,9 @@
 'use strict';
 
-// Override TMPDIR sebelum apapun di-require.
-// Shared hosting CloudLinux mount /tmp dengan noexec — Chromium tidak bisa dijalankan dari sana.
-// Arahkan ke home dir user yang executable.
-if (process.platform !== 'win32' && !process.env.CHROME_PATH) {
-    const _fs  = require('fs');
-    const _dir = (process.env.HOME || '/tmp') + '/chromium_tmp';
-    try { _fs.mkdirSync(_dir, { recursive: true }); } catch (_) {}
-    process.env.TMPDIR = _dir;
-}
-
-/**
- * wt_locate.cjs — headless Chrome locate_live runner for wikitrack.live
- *
- * Usage: node wt_locate.cjs <phone>
- * Output: JSON on stdout — {"success":true,"data":[...]} or {"success":false,"error":"..."}
- *
- * CF Turnstile auto-solves silently because --enable-automation is removed
- * (navigator.webdriver = false → CF treats browser as real user).
- * No X-Device-ID header is ever sent by this script.
- * _wt_did is set in localStorage so the SPA reuses a known registered device slot.
- */
-
 const puppeteer = require('puppeteer-core');
 const path      = require('path');
 const fs        = require('fs');
 
-// Resolve Chrome executable:
-// 1. CHROME_PATH env → use directly (local dev / VPS with Chrome installed)
-// 2. No CHROME_PATH on Linux → use @sparticuz/chromium (bundled, no install needed)
-// 3. Windows fallback → default Chrome path
 async function getChromePath() {
     if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
     if (process.platform !== 'win32') {
@@ -39,14 +13,8 @@ async function getChromePath() {
         } catch (_) {}
         return '/usr/bin/google-chrome';
     }
-    // Windows: cek system Chrome dulu, fallback ke puppeteer bundled Chromium
     const systemChrome = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
     if (fs.existsSync(systemChrome)) return systemChrome;
-    try {
-        // puppeteer@19 bundel Chrome 107 — compatible Windows Server 2012 R2
-        const p = require('puppeteer');
-        return p.executablePath();
-    } catch (_) {}
     return systemChrome;
 }
 
@@ -57,11 +25,11 @@ async function getSparticuzArgs() {
         return chromium.args || [];
     } catch (_) { return []; }
 }
+
 const WT          = 'https://wikitrack.live';
 const LICENSE     = process.env.WT_LICENSE_KEY || 'WT-XY3C-K2UV-N9QZ';
 const DEVICE_ID   = '18ed9e62-9a1c-4cb5-a7d1-de5e08e71720:mtxrxy';
-const PROFILE_DIR = process.env.CHROME_PROFILE_DIR
-    || path.resolve(__dirname, '../../storage/app/chrome_wt_profile');
+const PROFILE_DIR = process.env.CHROME_PROFILE_DIR || '/app/chrome_profile';
 const TIMEOUT_MS  = 50000;
 
 const phone = process.argv[2];
@@ -70,12 +38,14 @@ if (!phone) {
     process.exit(1);
 }
 
-// Ensure profile directory exists
 try { fs.mkdirSync(PROFILE_DIR, { recursive: true }); } catch (_) {}
 
 async function run() {
-    const executablePath  = await getChromePath();
-    const sparticuzArgs   = await getSparticuzArgs();
+    const executablePath = await getChromePath();
+    const sparticuzArgs  = await getSparticuzArgs();
+
+    // Railway = Docker normal, TIDAK perlu --single-process / --no-zygote
+    // Flag itu khusus CloudLinux seccomp — di Docker merusak JS renderer (React tidak render)
     const extraArgs = [
         '--disable-blink-features=AutomationControlled',
         '--no-sandbox',
@@ -92,12 +62,7 @@ async function run() {
         '--mute-audio',
         '--window-size=1366,768',
     ];
-    // Linux-only: workaround untuk CloudLinux seccomp yang blok fork/clone syscall
-    // JANGAN dipakai di Windows — merusak JS renderer (body jadi kosong)
-    if (process.platform !== 'win32') {
-        extraArgs.push('--no-zygote', '--single-process', '--disable-gpu-sandbox', '--disable-software-rasterizer');
-    }
-    // Merge sparticuz args (dedup)
+
     const args = [...new Set([...sparticuzArgs, ...extraArgs])];
 
     const browser = await puppeteer.launch({
@@ -107,7 +72,7 @@ async function run() {
         ignoreDefaultArgs: ['--enable-automation'],
         args,
         defaultViewport: { width: 1366, height: 768 },
-        timeout: 60000,         // 60s launch timeout (default 30s too short on slow shared hosting)
+        timeout: 60000,
         protocolTimeout: 60000,
     });
 
@@ -117,7 +82,6 @@ async function run() {
     );
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7' });
 
-    // Capture /api/track response (set before navigation)
     let trackResponse = null;
     page.on('response', async resp => {
         const url = resp.url();
@@ -129,18 +93,13 @@ async function run() {
         }
     });
 
-    // Navigate to root — 'load' waits for all resources (needed for React SPA)
     await page.goto(WT, { waitUntil: 'load', timeout: 30000 }).catch(() => {});
-
-    // Wait for CF challenge to pass (if any) — up to 20s for JS challenge auto-solve
     await waitForCloudflarePass(page, 20000);
 
-    // ── INJECT DEVICE ID immediately after CF (before SPA reads localStorage)
     await page.evaluate((did) => {
         localStorage.setItem('_wt_did', did);
     }, DEVICE_ID);
 
-    // ── Accept Terms if shown (first run with fresh profile)
     const hasCheckbox = await page.evaluate(() => !!document.querySelector('input[type="checkbox"]'));
     if (hasCheckbox) {
         await page.click('input[type="checkbox"]').catch(() => {});
@@ -153,10 +112,8 @@ async function run() {
         await page.evaluate((did) => { localStorage.setItem('_wt_did', did); }, DEVICE_ID);
     }
 
-    // ── Check login form — wait up to 5s (short: established sessions skip this fast)
     const loginReady = await waitForSelector(page, 'input[placeholder="WT-XXXX-XXXX-XXXX"]', 5000);
     if (loginReady) {
-        // Pakai evaluate (atomic) — lebih stabil saat SPA re-render & element bisa hilang tiba-tiba
         const filled = await page.evaluate((license) => {
             const inp = document.querySelector('input[placeholder="WT-XXXX-XXXX-XXXX"]');
             if (!inp) return false;
@@ -176,32 +133,28 @@ async function run() {
             await sleep(1500);
         }
     } else {
-        // Already authenticated — short wait for SPA to finish auto-auth
         await sleep(1500);
     }
 
-    // ── Wait for tool UI to be ready
     const inputReady = await waitForSelector(
         page, 'input[placeholder*="subject"], input[placeholder*="contact"]', 12000
     );
     if (!inputReady) {
         const diag = await page.evaluate(() => ({
-            title:   document.title,
-            url:     location.href,
-            isCF:    document.title.toLowerCase().includes('cloudflare') ||
-                     document.title.toLowerCase().includes('just a moment') ||
-                     !!document.querySelector('#challenge-form, #cf-challenge-running, #cf-spinner'),
+            title:    document.title,
+            url:      location.href,
+            isCF:     document.title.toLowerCase().includes('cloudflare') ||
+                      document.title.toLowerCase().includes('just a moment') ||
+                      !!document.querySelector('#challenge-form, #cf-challenge-running, #cf-spinner'),
             bodySnip: document.body ? document.body.innerText.substring(0, 300) : '',
         })).catch(() => ({}));
         await browser.close();
         return {
             success: false,
-            error:   'Tool UI tidak muncul — login mungkin gagal atau CF masih challenge',
-            diag,
+            error: `Tool UI tidak muncul | isCF:${diag.isCF} | title:"${diag.title}" | url:${diag.url} | body:"${(diag.bodySnip || '').substring(0, 200)}"`,
         };
     }
 
-    // ── Ensure LOCATE LIVE sidebar item is selected
     await page.evaluate(() => {
         const sidebar = [...document.querySelectorAll('button')].find(b =>
             b.textContent.includes('01.') && b.textContent.includes('LOCATE')
@@ -210,7 +163,6 @@ async function run() {
     });
     await sleep(300);
 
-    // ── Clear field and enter phone number
     await page.click('input[placeholder*="subject"], input[placeholder*="contact"]').catch(() => {});
     await sleep(200);
     await page.evaluate(() => {
@@ -221,7 +173,6 @@ async function run() {
     await page.type('input[placeholder*="subject"], input[placeholder*="contact"]', phone, { delay: 40 });
     await sleep(500);
 
-    // ── Click LOCATE LIVE submit button (the one with ▶)
     const clickBtn = async () => page.evaluate(() => {
         const btn = [...document.querySelectorAll('button')].find(b =>
             b.textContent.includes('LOCATE LIVE') && (b.textContent.includes('▶') || b.textContent.includes('►'))
@@ -236,12 +187,10 @@ async function run() {
         return { success: false, error: 'Tombol LOCATE LIVE tidak ditemukan' };
     }
 
-    // ── Wait for /api/track response; retry button click once if nothing comes within 20s
     const deadline = Date.now() + TIMEOUT_MS;
     let retried = false;
     while (!trackResponse && Date.now() < deadline) {
         await sleep(500);
-        // If half the timeout elapsed with no response, click the button once more
         if (!retried && Date.now() > deadline - (TIMEOUT_MS / 2)) {
             retried = true;
             await clickBtn();
@@ -253,7 +202,7 @@ async function run() {
     if (!trackResponse) {
         return {
             success: false,
-            error: `Timeout ${Math.round(TIMEOUT_MS / 1000)}s — CF mungkin menolak request dari IP server ini, coba lagi`,
+            error: `Timeout ${Math.round(TIMEOUT_MS / 1000)}s — CF mungkin menolak IP Railway ini`,
         };
     }
 
@@ -282,8 +231,6 @@ async function run() {
     }
     return { success: true, raw: data };
 }
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
@@ -326,8 +273,6 @@ async function waitForApiActivate(page, timeoutMs) {
         setTimeout(() => { page.off('response', handler); resolve(false); }, timeoutMs);
     });
 }
-
-// ── Entry point ───────────────────────────────────────────────────────────────
 
 run()
     .then(result => {
