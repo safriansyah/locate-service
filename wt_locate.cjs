@@ -113,16 +113,7 @@ async function run() {
     });
 
     let trackResponse = null;
-    let trackRequestSnip = '';
     const jsErrors = [];
-    page.on('request', req => {
-        const url = req.url();
-        if (url.includes('/api/track') && !url.includes('balance') && !url.includes('count')) {
-            const post = req.postData() || '';
-            // ambil 200 char pertama body request untuk diagnosis
-            trackRequestSnip = post.substring(0, 200);
-        }
-    });
     page.on('response', async resp => {
         const url = resp.url();
         if (url.includes('/api/track') && !url.includes('balance') && !url.includes('count')) {
@@ -261,10 +252,9 @@ async function run() {
     if (trackResponse.status !== 200) {
         let errBody = {};
         try { errBody = JSON.parse(trackResponse.body); } catch (_) {}
-        const hasTurnstile = trackRequestSnip.includes('turnstile') || trackRequestSnip.includes('cf-') || trackRequestSnip.length > 50;
         return {
             success: false,
-            error: `[${trackResponse.status}] ${errBody.error || errBody.message || 'HTTP error'} | req:"${trackRequestSnip.substring(0,120)}" | hasTurnstile:${hasTurnstile}`,
+            error: `[${trackResponse.status}] ${errBody.error || errBody.message || 'HTTP error'} | jsErr:${JSON.stringify(jsErrors.slice(0,2))}`,
         };
     }
 
