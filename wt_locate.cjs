@@ -92,12 +92,8 @@ async function run() {
         '--mute-audio',
         '--window-size=1366,768',
     ];
-    // Linux-only: workaround untuk CloudLinux seccomp yang blok fork/clone syscall
-    // JANGAN dipakai di Windows — merusak JS renderer (body jadi kosong)
-    if (process.platform !== 'win32') {
-        extraArgs.push('--no-zygote', '--single-process', '--disable-gpu-sandbox', '--disable-software-rasterizer');
-    }
-    // Merge sparticuz args (dedup)
+    // Railway = Docker normal, tidak perlu --single-process (itu khusus CloudLinux seccomp)
+    // --single-process merusak JS renderer → React SPA tidak render → tool UI kosong
     const args = [...new Set([...sparticuzArgs, ...extraArgs])];
 
     const browser = await puppeteer.launch({
