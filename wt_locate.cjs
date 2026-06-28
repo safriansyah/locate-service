@@ -45,13 +45,13 @@ async function run() {
     const sparticuzArgs  = await getSparticuzArgs();
 
     // Railway = Docker normal, TIDAK perlu --single-process / --no-zygote
-    // Flag itu khusus CloudLinux seccomp — di Docker merusak JS renderer (React tidak render)
+    // --disable-gpu membunuh WebGL → React app (yang pakai WebGL/peta) crash → root kosong
+    // Solusi: SwiftShader = software WebGL renderer (jalan tanpa GPU fisik)
     const extraArgs = [
         '--disable-blink-features=AutomationControlled',
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-infobars',
-        '--disable-gpu',
         '--disable-dev-shm-usage',
         '--disable-extensions',
         '--disable-background-networking',
@@ -61,13 +61,18 @@ async function run() {
         '--hide-scrollbars',
         '--mute-audio',
         '--window-size=1366,768',
+        // Software WebGL via SwiftShader — wajib di Docker tanpa GPU
+        '--use-gl=angle',
+        '--use-angle=swiftshader',
+        '--ignore-gpu-blocklist',
+        '--enable-webgl',
     ];
 
     const args = [...new Set([...sparticuzArgs, ...extraArgs])];
 
     const browser = await puppeteer.launch({
         executablePath,
-        headless: true,
+        headless: 'new', // new headless mode: full Chrome di background, WebGL SwiftShader aktif otomatis
         userDataDir: PROFILE_DIR,
         ignoreDefaultArgs: ['--enable-automation'],
         args,
