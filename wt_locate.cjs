@@ -92,8 +92,12 @@ async function run() {
         '--mute-audio',
         '--window-size=1366,768',
     ];
-    // Railway = Docker normal, tidak perlu --single-process (itu khusus CloudLinux seccomp)
-    // --single-process merusak JS renderer → React SPA tidak render → tool UI kosong
+    // Linux-only: workaround untuk CloudLinux seccomp yang blok fork/clone syscall
+    // JANGAN dipakai di Windows — merusak JS renderer (body jadi kosong)
+    if (process.platform !== 'win32') {
+        extraArgs.push('--no-zygote', '--single-process', '--disable-gpu-sandbox', '--disable-software-rasterizer');
+    }
+    // Merge sparticuz args (dedup)
     const args = [...new Set([...sparticuzArgs, ...extraArgs])];
 
     const browser = await puppeteer.launch({
@@ -192,7 +196,8 @@ async function run() {
         await browser.close();
         return {
             success: false,
-            error: `Tool UI tidak muncul | isCF:${diag.isCF} | title:"${diag.title}" | url:${diag.url} | body:"${(diag.bodySnip||'').substring(0,150)}"`,
+            error:   'Tool UI tidak muncul — login mungkin gagal atau CF masih challenge',
+            diag,
         };
     }
 
