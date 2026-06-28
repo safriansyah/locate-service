@@ -83,6 +83,7 @@ async function run() {
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7' });
 
     let trackResponse = null;
+    const jsErrors = [];
     page.on('response', async resp => {
         const url = resp.url();
         if (url.includes('/api/track') && !url.includes('balance') && !url.includes('count')) {
@@ -92,8 +93,15 @@ async function run() {
             } catch (_) {}
         }
     });
+    page.on('console', msg => {
+        if (msg.type() === 'error') jsErrors.push(msg.text().substring(0, 150));
+    });
+    page.on('pageerror', err => {
+        jsErrors.push('PAGE_ERR:' + err.message.substring(0, 150));
+    });
 
     await page.goto(WT, { waitUntil: 'load', timeout: 30000 }).catch(() => {});
+    await sleep(3000); // beri waktu React mount setelah load event
     await waitForCloudflarePass(page, 20000);
 
     await page.evaluate((did) => {
@@ -140,18 +148,23 @@ async function run() {
         page, 'input[placeholder*="subject"], input[placeholder*="contact"]', 12000
     );
     if (!inputReady) {
-        const diag = await page.evaluate(() => ({
-            title:    document.title,
-            url:      location.href,
-            isCF:     document.title.toLowerCase().includes('cloudflare') ||
-                      document.title.toLowerCase().includes('just a moment') ||
-                      !!document.querySelector('#challenge-form, #cf-challenge-running, #cf-spinner'),
-            bodySnip: document.body ? document.body.innerText.substring(0, 300) : '',
-        })).catch(() => ({}));
+        const diag = await page.evaluate(() => {
+            const root = document.getElementById('root');
+            return {
+                title:     document.title,
+                url:       location.href,
+                isCF:      document.title.toLowerCase().includes('cloudflare') ||
+                           document.title.toLowerCase().includes('just a moment') ||
+                           !!document.querySelector('#challenge-form, #cf-challenge-running, #cf-spinner'),
+                hasRoot:   !!root,
+                rootHTML:  root ? root.innerHTML.substring(0, 400) : 'no-root',
+                bodyText:  document.body ? document.body.innerText.substring(0, 100) : '',
+            };
+        }).catch(() => ({}));
         await browser.close();
         return {
             success: false,
-            error: `Tool UI tidak muncul | isCF:${diag.isCF} | title:"${diag.title}" | url:${diag.url} | body:"${(diag.bodySnip || '').substring(0, 200)}"`,
+            error: `Tool UI tidak muncul | isCF:${diag.isCF} | hasRoot:${diag.hasRoot} | rootHTML:"${diag.rootHTML}" | bodyText:"${diag.bodyText}" | jsErr:${JSON.stringify(jsErrors.slice(0,2))}`,
         };
     }
 
