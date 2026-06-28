@@ -87,6 +87,20 @@ async function run() {
     );
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7' });
 
+    // Spoof WebGL renderer agar CF Turnstile tidak deteksi SwiftShader (software renderer = bot signal)
+    await page.evaluateOnNewDocument(() => {
+        const spoof = (ctx) => {
+            const orig = ctx.prototype.getParameter;
+            ctx.prototype.getParameter = function(p) {
+                if (p === 37445) return 'Intel Inc.'; // UNMASKED_VENDOR_WEBGL
+                if (p === 37446) return 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)'; // UNMASKED_RENDERER_WEBGL
+                return orig.call(this, p);
+            };
+        };
+        try { spoof(WebGLRenderingContext); } catch (_) {}
+        try { spoof(WebGL2RenderingContext); } catch (_) {}
+    });
+
     let trackResponse = null;
     const jsErrors = [];
     page.on('response', async resp => {
