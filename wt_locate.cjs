@@ -196,8 +196,7 @@ async function run() {
         await browser.close();
         return {
             success: false,
-            error:   'Tool UI tidak muncul — login mungkin gagal atau CF masih challenge',
-            diag,
+            error: `Tool UI tidak muncul | isCF:${diag.isCF} | title:"${diag.title}" | url:${diag.url} | body:"${(diag.bodySnip||'').substring(0,150)}"`,
         };
     }
 
